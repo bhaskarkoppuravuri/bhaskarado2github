@@ -1,0 +1,138 @@
+name: Litigation Hold Workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  litigation-hold:
+    runs-on: AZWP22WSAPX96
+
+    env:
+      TENANTID: ${{ vars.TENANTID }}
+      CLIENTID: ${{ vars.CLIENTID }}
+      CLIENTSECRET: ${{ secrets.CLIENTSECRET }}
+
+    steps:
+      # Checkout repo
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Checkout templates repo
+      - name: Checkout templates repo
+        uses: actions/checkout@v4
+        with:
+          repository: IO-Automation/pipeline-templates
+          ref: v5.0
+          path: templates
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # # Azure Login (required)
+      # - name: Azure Login
+      #   uses: azure/login@v2
+      #   with:
+      #     creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Run PowerShell script
+      - name: Run Litigation Hold Task
+        id: litigation
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            #################### CONNECT EXCHANGE ONLINE ########################
+            $TenantId = "${env:TENANTID}"
+            $ClientId = "${env:CLIENTID}"
+            $ClientSecret = "${env:CLIENTSECRET}"
+
+            $Body = @{
+                grant_type    = "client_credentials"
+                client_id     = $ClientId
+                client_secret = $ClientSecret
+                scope         = "https://outlook.office365.com/.default"
+            }
+
+            $TokenResponse = Invoke-RestMethod -Method Post `
+              -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" `
+              -ContentType "application/x-www-form-urlencoded" `
+              -Body $Body
+
+            $AccessToken = $TokenResponse.access_token
+
+            try {
+                Connect-ExchangeOnline -AccessToken $AccessToken `
+                  -DelegatedOrganization "fcx365.onmicrosoft.com" `
+                  -ErrorAction Stop
+
+                Write-Host "Connected to Exchange Online"
+            }
+            catch {
+                Write-Host "Connection failed: $_"
+                exit 1
+            }
+
+            #################### PROCESS MAILBOXES ########################
+            $successMailboxes = @()
+            $failedMailboxes = @()
+
+            $mailboxes = Get-Mailbox -ResultSize unlimited | Where-Object {
+              $_.WhenCreated -ge ((Get-Date).AddDays(-1))
+            }
+
+            foreach ($mailbox in $mailboxes) {
+              $user = $mailbox.PrimarySmtpAddress
+
+              try {
+                Set-Mailbox -LitigationHoldEnabled $true `
+                  -LitigationHoldDuration 395 `
+                  -Identity $user -ErrorAction Stop
+
+                $successMailboxes += $mailbox
+              }
+              catch {
+                Write-Host "Failed for $user"
+                $failedMailboxes += $mailbox
+              }
+            }
+
+            #################### EXPORT FILES ########################
+            $date = Get-Date -Format "dd-MM-yyyy"
+            $successCsv = "C:\temp\Success_Mailboxes_$date.csv"
+            $failedCsv = "C:\temp\Failed_Mailboxes_$date.csv"
+
+      #       $successMailboxes | Export-Csv $successCsv -NoTypeInformation
+      #       $failedMailboxes  | Export-Csv $failedCsv -NoTypeInformation
+
+      #       #################### HTML REPORT ########################
+      #       $successHtml = $successMailboxes | ConvertTo-Html | Out-String
+      #       $failedHtml  = $failedMailboxes  | ConvertTo-Html | Out-String
+
+      #       $body = "<html><body>$successHtml<br>$failedHtml</body></html>"
+
+      #       Set-Content -Path "$env:RUNNER_TEMP/email.html" -Value $body
+
+      #       #################### OUTPUTS ########################
+      #       echo "email_subject=Litigation Hold Report" >> $env:GITHUB_OUTPUT
+      #       echo "email_to=MIS-IO-IAM@fmi.com,MIS-IO-Automationteam@fmi.com" >> $env:GITHUB_OUTPUT
+      #       echo "attachments=$successCsv,$failedCsv" >> $env:GITHUB_OUTPUT
+
+      # # Upload artifacts (instead of pipeline attachments)
+      # - name: Upload CSV reports
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: litigation-reports
+      #     path: |
+      #       ${{ runner.temp }}/Success_*.csv
+      #       ${{ runner.temp }}/Failed_*.csv
+
+      # # Email step (replacement for Azure template)
+      # - name: Send Email
+      #   uses: dawidd6/action-send-mail@v3
+      #   with:
+      #     server_address: ${{ secrets.SMTP_SERVER }}
+      #     server_port: 587
+      #     username: ${{ secrets.SMTP_USERNAME }}
+      #     password: ${{ secrets.SMTP_PASSWORD }}
+      #     subject: ${{ steps.litigation.outputs.email_subject }}
+      #     to: ${{ steps.litigation.outputs.email_to }}
+      #     from: ${{ secrets.SMTP_USERNAME }}
+      #     html_body: file://${{ runner.temp }}/email.html
