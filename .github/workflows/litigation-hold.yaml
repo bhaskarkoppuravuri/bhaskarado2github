@@ -5,7 +5,7 @@ on:
 
 jobs:
   litigation-hold:
-    runs-on: 
+    runs-on: windows-latest
 
     steps:
       # Checkout repo
