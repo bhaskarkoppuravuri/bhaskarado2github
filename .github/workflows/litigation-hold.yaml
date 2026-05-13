@@ -10,10 +10,7 @@ jobs:
     steps:
       # Run PowerShell script
       - name: Run Litigation Hold Task
-        id: litigation
-        uses: azure/powershell@v2
-        with:
-          azPSVersion: latest
-          inlineScript: |
+        shell: pwsh
+        run: |
             whoami
             hostname
